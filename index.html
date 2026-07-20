@@ -1,0 +1,385 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>字母颜色配对消除（固定六色 + 粒子 + 自适应）</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <style>
+    :root { --bg:#0f0f10; --panel:#151618; }
+    html,body{height:100%;margin:0;background:var(--bg);color:#fff;font-family:system-ui, "Segoe UI", Roboto, "Microsoft YaHei", Arial;display:flex;align-items:center;justify-content:center}
+    #wrap{width:clamp(320px,92vw,720px);max-width:720px;text-align:center;padding:12px}
+    #hud{margin-bottom:10px;text-align:right}
+    button{padding:8px 12px;margin-left:6px;cursor:pointer;border-radius:8px;border:none;background:#2b2b2f;color:#fff}
+    #canvasWrap { width:100%; display:flex; justify-content:center; }
+    canvas{background:var(--panel);border-radius:12px;box-shadow:0 8px 30px rgba(0,0,0,0.6); touch-action:none; width:100%; height:auto; display:block; }
+    #overlay{position:fixed;left:0;top:0;right:0;bottom:0;display:flex;align-items:center;justify-content:center;pointer-events:none}
+    .winBox{pointer-events:auto;padding:18px 22px;border-radius:12px;background:rgba(0,0,0,0.55)}
+    .winText{font-size:36px;font-weight:800;letter-spacing:4px}
+  </style>
+</head>
+<body>
+  <div id="wrap">
+    <div id="hud">
+      <button id="restart">重置</button>
+    </div>
+    <div id="canvasWrap">
+      <canvas id="game"></canvas>
+    </div>
+  </div>
+
+  <div id="overlay"></div>
+
+  <script>
+  // ===== 配置 =====
+  const COLS = 7;
+  const ROWS = 7;
+  const LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split('');
+  const PADDING_TOP_RATIO = 0.02;
+  const TILE_MARGIN_RATIO = 0.03;
+  const PARTICLE_COUNT_PER_TILE = 18;
+  const GRAVITY = 900;
+  // 固定六种颜色（淡红, 淡绿, 白, 浅紫, 天蓝, 浅粉）
+  const COLOR_PALETTE = [
+    '#ff8a80', // 淡红
+    '#a5d6a7', // 淡绿
+    '#ffffff', // 白
+    '#ce93d8', // 浅紫
+    '#81d4fa', // 天蓝
+    '#ffc1e3'  // 浅粉
+  ];
+  // ===========
+
+  // DOM
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d', { alpha: false });
+  const restartBtn = document.getElementById('restart');
+  const overlay = document.getElementById('overlay');
+  const canvasWrap = document.getElementById('canvasWrap');
+
+  // 状态
+  let availableLetters = [];
+  let removedLetters = new Set();
+  let grid = [];
+  let selected = null;
+  let locked = false;
+  let gameOver = false;
+
+  // 渲染/布局状态
+  let DPR = Math.max(1, window.devicePixelRatio || 1);
+  let boardWidth = 0, boardHeight = 0, cell = 0, paddingTop = 0, tileMargin = 0, left = 0;
+
+  // 粒子系统
+  const particles = [];
+
+  // ===== 工具函数 =====
+  function randColor() {
+    return COLOR_PALETTE[Math.floor(Math.random() * COLOR_PALETTE.length)];
+  }
+  function randLetter(){
+    if (availableLetters.length === 0) return null;
+    return availableLetters[Math.floor(Math.random() * availableLetters.length)];
+  }
+  function sleep(ms){ return new Promise(res=>setTimeout(res,ms)); }
+
+  // ===== 初始化与重置 =====
+  function initGrid(){
+    availableLetters = LETTERS.slice();
+    removedLetters.clear();
+    selected = null;
+    locked = false;
+    gameOver = false;
+    grid = Array.from({length: ROWS}, () => Array.from({length: COLS}, () => null));
+    for (let r=0;r<ROWS;r++){
+      for (let c=0;c<COLS;c++){
+        grid[r][c] = { letter: randLetter(), color: randColor() };
+      }
+    }
+    resizeCanvas();
+    draw();
+  }
+
+  // ===== 自适应大小/高 DPI 处理 =====
+  function resizeCanvas(){
+    const wrapStyle = canvasWrap.getBoundingClientRect();
+    const maxCSSWidth = wrapStyle.width;
+    const paddingTopCSS = Math.max(8, maxCSSWidth * PADDING_TOP_RATIO);
+    const tentativeCell = Math.floor(maxCSSWidth / COLS);
+    let cssWidth = tentativeCell * COLS;
+    let cssHeight = Math.floor(paddingTopCSS + tentativeCell * ROWS);
+    const maxAvailableHeight = Math.min(window.innerHeight - 40, window.innerWidth * 1.2);
+    if (cssHeight > maxAvailableHeight) {
+      const tentativeCell2 = Math.floor((maxAvailableHeight - paddingTopCSS) / ROWS);
+      if (tentativeCell2 > 10) {
+        const newCell = tentativeCell2;
+        cssWidth = newCell * COLS;
+        cssHeight = Math.floor(paddingTopCSS + newCell * ROWS);
+      }
+    }
+    canvas.style.width = cssWidth + 'px';
+    canvas.style.height = cssHeight + 'px';
+    DPR = Math.max(1, window.devicePixelRatio || 1);
+    canvas.width = Math.round(cssWidth * DPR);
+    canvas.height = Math.round(cssHeight * DPR);
+    boardWidth = canvas.width;
+    boardHeight = canvas.height;
+    cell = Math.floor((boardWidth / DPR) / COLS);
+    paddingTop = Math.round((canvas.height / DPR) * PADDING_TOP_RATIO);
+    tileMargin = Math.max(2, Math.floor(cell * TILE_MARGIN_RATIO));
+    left = Math.round((canvas.width / DPR - cell * COLS) / 2) * DPR / DPR;
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  }
+
+  window.addEventListener('resize', () => {
+    resizeCanvas();
+    draw();
+  });
+
+  // ===== 绘制 =====
+  function draw(){
+    ctx.fillStyle = '#0c0c0d';
+    ctx.fillRect(0,0,canvas.width / DPR, canvas.height / DPR);
+
+    const leftCSS = (canvas.width / DPR - cell * COLS) / 2;
+    for (let r=0;r<ROWS;r++){
+      for (let c=0;c<COLS;c++){
+        const x = leftCSS + c * cell;
+        const y = paddingTop + r * cell;
+        ctx.fillStyle = '#171719';
+        roundRect(ctx, x + cell*0.06, y + cell*0.06, cell * 0.88, cell * 0.88, Math.max(6, cell*0.08), true);
+        const t = grid[r][c];
+        if (t){
+          ctx.fillStyle = t.color;
+          roundRect(ctx, x + cell*0.11, y + cell*0.11, cell * 0.78, cell * 0.78, Math.max(6, cell*0.06), true);
+          ctx.fillStyle = (t.color === '#ffffff') ? '#111' : '#ffffff'; // 白色字块用暗字
+          ctx.font = `bold ${Math.floor(cell*0.36)}px system-ui, Arial`;
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(t.letter, x + cell/2, y + cell/2 + 1);
+          if (selected && selected.r === r && selected.c === c){
+            ctx.lineWidth = Math.max(2, cell*0.06);
+            ctx.strokeStyle = '#ffffff';
+            ctx.strokeRect(x + cell*0.09, y + cell*0.09, cell * 0.82, cell * 0.82);
+          } else {
+            ctx.lineWidth = 1;
+            ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+            ctx.strokeRect(x + cell*0.09, y + cell*0.09, cell * 0.82, cell * 0.82);
+          }
+        }
+      }
+    }
+
+    // 粒子
+    for (let i = particles.length -1; i >=0; i--){
+      const p = particles[i];
+      const alpha = Math.max(0, p.life / p.maxLife);
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = p.color;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.size, 0, Math.PI*2);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+      if (p.life <= 0) particles.splice(i,1);
+    }
+  }
+
+  function roundRect(ctx, x, y, w, h, r, fill=false){
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+    if (fill) ctx.fill();
+  }
+
+  // ===== 坐标映射 =====
+  function posToCell(px, py){
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = rect.width / (canvas.width / DPR);
+    const scaleY = rect.height / (canvas.height / DPR);
+    const leftCSS = (canvas.width / DPR - cell * COLS) / 2;
+    const localX = (px - rect.left) / scaleX;
+    const localY = (py - rect.top) / scaleY;
+    const c2 = Math.floor((localX - leftCSS) / cell);
+    const r2 = Math.floor((localY - paddingTop) / cell);
+    if (r2 < 0 || r2 >= ROWS || c2 < 0 || c2 >= COLS) return null;
+    return { r: r2, c: c2 };
+  }
+
+  // ===== 交互 =====
+  function handlePointer(clientX, clientY){
+    if (locked || gameOver) return;
+    const cellPos = posToCell(clientX, clientY);
+    if (!cellPos) return;
+    const t = grid[cellPos.r][cellPos.c];
+    if (!t) return;
+    if (!selected){
+      selected = cellPos;
+      draw();
+      return;
+    } else {
+      if (selected.r === cellPos.r && selected.c === cellPos.c){
+        selected = null;
+        draw();
+        return;
+      }
+      const t1 = grid[selected.r][selected.c];
+      const t2 = grid[cellPos.r][cellPos.c];
+      if (t1 && t2 && t1.letter === t2.letter && t1.color === t2.color){
+        locked = true;
+        const removedLetter = t1.letter;
+        const removedTiles = [ {r:selected.r,c:selected.c, t:t1}, {r:cellPos.r,c:cellPos.c, t:t2} ];
+        grid[selected.r][selected.c] = null;
+        grid[cellPos.r][cellPos.c] = null;
+        if (!removedLetters.has(removedLetter)) {
+          removedLetters.add(removedLetter);
+          const idx = availableLetters.indexOf(removedLetter);
+          if (idx !== -1) availableLetters.splice(idx,1);
+        }
+        for (const info of removedTiles){
+          emitTileParticles(info.r, info.c, info.t.color);
+        }
+        selected = null;
+        draw();
+        setTimeout(async ()=>{
+          collapseAndFill();
+          draw();
+          await sleep(140);
+          if (checkVictory()) showVictory();
+          locked = false;
+        }, 120);
+      } else {
+        selected = cellPos;
+        draw();
+      }
+    }
+  }
+
+  canvas.addEventListener('pointerdown', e=>{
+    canvas.setPointerCapture && canvas.setPointerCapture(e.pointerId);
+    handlePointer(e.clientX, e.clientY);
+  });
+
+  canvas.addEventListener('touchstart', e => { e.preventDefault(); }, {passive:false});
+
+  restartBtn.addEventListener('click', ()=>{
+    overlay.innerHTML = '';
+    particles.length = 0;
+    initGrid();
+  });
+
+  // ===== 下落与补充 =====
+  function collapseAndFill(){
+    for (let c = 0; c < COLS; c++){
+      let write = ROWS - 1;
+      for (let r = ROWS - 1; r >= 0; r--){
+        if (grid[r][c] != null){
+          grid[write][c] = grid[r][c];
+          if (write !== r) grid[r][c] = null;
+          write--;
+        }
+      }
+      for (let r = write; r >= 0; r--){
+        const letter = randLetter();
+        grid[r][c] = letter ? { letter: letter, color: randColor() } : null;
+      }
+    }
+  }
+
+  // ===== 胜利检测 =====
+  function checkVictory(){
+    let theLetter = null;
+    let any = false;
+    for (let r=0;r<ROWS;r++){
+      for (let c=0;c<COLS;c++){
+        const t = grid[r][c];
+        if (t){
+          if (!any){ theLetter = t.letter; any = true; }
+          else if (t.letter !== theLetter) return false;
+        }
+      }
+    }
+    return any;
+  }
+
+  function showVictory(){
+    gameOver = true;
+    overlay.innerHTML = '';
+    const box = document.createElement('div');
+    box.className = 'winBox';
+    const text = document.createElement('div');
+    text.className = 'winText';
+    const content = '傻子终于过关了';
+    for (const ch of content){
+      const span = document.createElement('span');
+      span.textContent = ch;
+      span.style.color = `hsl(${Math.floor(Math.random()*360)}deg 80% 60%)`;
+      span.style.margin = '0 3px';
+      text.appendChild(span);
+    }
+    box.appendChild(text);
+    overlay.appendChild(box);
+  }
+
+  // ===== 粒子系统 =====
+  function emitTileParticles(r, c, color){
+    const leftCSS = (canvas.width / DPR - cell * COLS) / 2;
+    const centerX = (leftCSS + c * cell + cell / 2);
+    const centerY = (paddingTop + r * cell + cell / 2);
+    for (let i=0;i<PARTICLE_COUNT_PER_TILE;i++){
+      const angle = Math.random() * Math.PI * 2;
+      const speed = 120 + Math.random()*260;
+      const vx = Math.cos(angle) * speed;
+      const vy = Math.sin(angle) * speed * 0.7 - 120 * Math.random();
+      const size = Math.max(1, Math.random() * (cell * 0.08));
+      const life = 0.6 + Math.random() * 0.6;
+      particles.push({
+        x: centerX,
+        y: centerY,
+        vx, vy,
+        color,
+        life: life,
+        maxLife: life,
+        size: size
+      });
+    }
+  }
+
+  let lastTime = performance.now();
+  function step(){
+    const now = performance.now();
+    const dt = Math.min(0.04, (now - lastTime) / 1000);
+    lastTime = now;
+    for (let i = particles.length -1; i >=0; i--){
+      const p = particles[i];
+      p.vy += GRAVITY * dt;
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      p.life -= dt;
+      const bottomY = paddingTop + ROWS * cell;
+      if (p.y > bottomY && p.vy > 0){
+        p.y = bottomY;
+        p.vy *= -0.4;
+        p.vx *= 0.7;
+        p.life -= 0.1;
+      }
+      if (p.life <= 0) particles.splice(i,1);
+    }
+    draw();
+    requestAnimationFrame(step);
+  }
+
+  // ===== 启动 =====
+  function start(){
+    resizeCanvas();
+    initGrid();
+    lastTime = performance.now();
+    requestAnimationFrame(step);
+  }
+
+  start();
+
+  </script>
+</body>
+</html>
