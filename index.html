@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>字母颜色配对消除（固定六色 + 粒子 + 自适应）</title>
+  <title>字母配对消除（按字母匹配，固定六色 + 粒子 + 自适应）</title>
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
   <style>
     :root { --bg:#0f0f10; --panel:#151618; }
@@ -31,12 +31,12 @@
 
   <script>
   // ===== 配置 =====
-  const COLS = 5; // 改为 5x5，降低难度
+  const COLS = 5; // 5x5 网格
   const ROWS = 5;
   const LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split('');
   const PADDING_TOP_RATIO = 0.02;
   const TILE_MARGIN_RATIO = 0.03;
-  const PARTICLE_COUNT_PER_TILE = 14; // 适当减少粒子
+  const PARTICLE_COUNT_PER_TILE = 12;
   const GRAVITY = 900;
   // 固定六种颜色（淡红, 淡绿, 白, 浅紫, 天蓝, 浅粉）
   const COLOR_PALETTE = [
@@ -226,14 +226,25 @@
       }
       const t1 = grid[selected.r][selected.c];
       const t2 = grid[cellPos.r][cellPos.c];
-      if (t1 && t2 && t1.letter === t2.letter && t1.color === t2.color){
+      // 改动：只比较字母，忽略颜色
+      if (t1 && t2 && t1.letter === t2.letter){
         locked = true;
         const removedLetter = t1.letter;
         const removedTiles = [ {r:selected.r,c:selected.c, t:t1}, {r:cellPos.r,c:cellPos.c, t:t2} ];
         grid[selected.r][selected.c] = null;
         grid[cellPos.r][cellPos.c] = null;
-        if (!removedLetters.has(removedLetter)) {
-          removedLetters.add(removedLetter);
+        // 仅当该字母在棋盘上完全不存在时再从刷新池中移除
+        let stillExists = false;
+        for (let rr=0; rr<ROWS && !stillExists; rr++){
+          for (let cc=0; cc<COLS; cc++){
+            const tt = grid[rr][cc];
+            if (tt && tt.letter === removedLetter) { stillExists = true; break; }
+          }
+        }
+        if (!stillExists) {
+          if (!removedLetters.has(removedLetter)) {
+            removedLetters.add(removedLetter);
+          }
           const idx = availableLetters.indexOf(removedLetter);
           if (idx !== -1) availableLetters.splice(idx,1);
         }
